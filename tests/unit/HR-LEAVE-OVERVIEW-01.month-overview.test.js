@@ -15,16 +15,19 @@ import { describe, expect, it, jest } from '@jest/globals';
 
 const findMany = jest.fn(async () => []);
 const employeeFindMany = jest.fn(async () => []);
+const policyFindMany = jest.fn(async () => [{ id: 2, name: 'Annual' }, { id: 5, name: 'Unpaid Leave' }]);
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({
   default: {
-    leaveRequest: { findMany },
+    leaveRequest: { findMany, groupBy: jest.fn(async () => [{ employeeId: 7, leavePolicyId: 5, _sum: { totalDays: 3 } }]) },
+    leaveBalance: { findMany: jest.fn(async () => [{ employeeId: 7, leavePolicyId: 2, balance: 10, carryOverBalance: 2, leavePolicy: { id: 2, name: 'Annual' } }]) },
     employee: { findMany: employeeFindMany },
+    leavePolicy: { findMany: policyFindMany },
   },
 }));
 
 const leaveManagement = await import('../../src/services/leaveManagement.service.js');
-const { getLeaveMonthOverview, getNext30Coverage } = leaveManagement;
+const { getLeaveMonthOverview, getNext30Coverage, getLeaveBalancesSummary } = leaveManagement;
 
 describe('HR-LEAVE-OVERVIEW-01 · getLeaveMonthOverview', () => {
   it('selects totalDays, so per-department and per-type day counts are real', async () => {
@@ -63,10 +66,38 @@ describe('HR-LEAVE-OVERVIEW-01 · getLeaveMonthOverview', () => {
     expect(out.byType.annual).toBe(4);
   });
 
+  it('HR-LEAVE-KPI-02: lists every active leave type, not only four buckets', async () => {
+    const d = (n) => new Date(`2026-10-${n}T00:00:00.000Z`);
+    findMany.mockResolvedValueOnce([
+      { id: 40, employeeId: 7, startDate: d('06'), endDate: d('07'), status: 'APPROVED', totalDays: 2, reason: null,
+        employee: { id: 7, employee_code: 'E7' }, leavePolicy: { id: 5, name: 'Unpaid Leave', leaveTypeCode: 'UNPAID' }, days: [] },
+      { id: 41, employeeId: 7, startDate: d('09'), endDate: d('09'), status: 'APPROVED', totalDays: 1, reason: null,
+        employee: { id: 7, employee_code: 'E7' }, leavePolicy: { id: 9, name: 'Old Comp Off', leaveTypeCode: 'COMP' }, days: [] },
+    ]);
+    const out = await getLeaveMonthOverview({ month: '2026-10' }, 'tenant-A');
+    expect(out.byType.other).toBe(3); // the old shape: unpaid leave hid in "other"
+    expect(out.byPolicy).toEqual([
+      { id: 2, name: 'Annual', days: 0 },
+      { id: 5, name: 'Unpaid Leave', days: 2 },
+      { id: 9, name: 'Old Comp Off', days: 1 }, // retired, but taken this month
+    ]);
+  });
+
   it('rejects a month that is not YYYY-MM', async () => {
     await expect(getLeaveMonthOverview({ month: 'October 2026' })).rejects.toThrow(
       /month must be YYYY-MM/,
     );
+  });
+});
+
+describe('HR-LEAVE-KPI-02 · getLeaveBalancesSummary', () => {
+  it("gives the employee every leave type, including one with no balance row (unpaid leave)", async () => {
+    const out = await getLeaveBalancesSummary({ employeeId: 7 }, 'tenant-A');
+    expect(out.byPolicy).toEqual([
+      { id: 2, name: 'Annual', used: 0, remaining: 10, total: 12, hasBalance: true },
+      { id: 5, name: 'Unpaid Leave', used: 3, remaining: 0, total: 3, hasBalance: false },
+    ]);
+    expect(out.balances.annual.remaining).toBe(10); // the old buckets are unchanged
   });
 });
 
