@@ -82,6 +82,24 @@ export function validateSchedulePattern(pattern) {
     }
   }
 
+  // ── on-call days (HR-ATT-ONCALL-03) ─────────────────────────────────────
+  // Weekdays the person is off but may be rung in for. Informational for the
+  // roster (the timesheet marks them); the call-in itself is what makes the
+  // day a working day. Without a rotation an on-call day must be a day off.
+  const onCall = pattern.onCallDays;
+  if (onCall !== undefined) {
+    if (!Array.isArray(onCall)) {
+      errors.push("onCallDays: expected an array of ISO weekdays (Mon=1 .. Sun=7)");
+    } else {
+      for (const d of onCall) {
+        if (!isWeekday(d)) errors.push(`onCallDays: ${JSON.stringify(d)} is not an ISO weekday (Mon=1 .. Sun=7)`);
+        else if (!pattern.cycle && !(Array.isArray(offDays) && offDays.includes(d)))
+          errors.push(`onCallDays: ${d} is a working day; an on-call day must be a day off`);
+      }
+      if (new Set(onCall).size !== onCall.length) errors.push("onCallDays: remove duplicate weekdays");
+    }
+  }
+
   // ── shifts ──────────────────────────────────────────────────────────────
   const rotating = Array.isArray(pattern.rotatingShifts) ? pattern.rotatingShifts : null;
   if (pattern.rotatingShifts !== undefined && !rotating) {
