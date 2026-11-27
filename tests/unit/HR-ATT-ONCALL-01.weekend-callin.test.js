@@ -36,3 +36,20 @@ describe('published on-call and roster correction rules',()=>{
   expect(db.snapshot().attendanceEvaluation).toHaveLength(1);
  });
 });
+
+// HR-ATT-ONCALL-02 — the shared rotation fixture rests on DATE (sequence index 1 is null).
+describe('call-in on a rotation rest day',()=>{
+ const rotCall={extra:{attendanceCallIn:[call]}};
+ it('charges a no-show instead of waiting for ever',async()=>{
+  const db=evaluationDb({pattern:rotation,...rotCall});await evaluate(db);
+  expect(db.snapshot().attendance[0].status).toBe('ABSENT');
+ });
+ it('measures a turn-up against the nearest rotation window',async()=>{
+  const db=evaluationDb({pattern:rotation,punches:[['09:00',0],['17:00',1]],...rotCall});await evaluate(db);
+  expect(db.snapshot().attendance[0].status).toBe('PRESENT');
+ });
+ it('still rests without a call-in',async()=>{
+  const db=evaluationDb({pattern:rotation});await evaluate(db);
+  expect(db.snapshot().attendance[0].status).not.toBe('ABSENT');
+ });
+});

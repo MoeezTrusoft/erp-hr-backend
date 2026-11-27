@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import { getOvertimeRules } from "../../services/overtimeService.js";
 import { getWorkSchedules, getRosterCoverage } from "../../services/workScheduleService.js";
@@ -38,7 +39,19 @@ export function registerOvertimeWorkScheduleTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
-      const data = await getWorkSchedules({ ...args, tenantId: user.tenantId });
+      // HR-ROSTER-SCOPE-01 — every employee holds hr:attendance VIEW; it shows
+      // them their own roster, not the company's. A foreign id is refused.
+      const scope = resolveAttendanceReadScope(user, permissions);
+      if (!scope.canViewOthers) {
+        if (args.employeeId != null && args.employeeId !== "" && Number(args.employeeId) !== scope.employeeId)
+          throw Object.assign(new Error("Insufficient permissions: you can only see your own work schedule"), { status: 403, code: "HR-4030" });
+        if (scope.employeeId == null) return { content: [{ type: "text", text: "[]" }] };
+      }
+      const data = await getWorkSchedules({
+        ...args,
+        ...(scope.canViewOthers ? {} : { employeeId: scope.employeeId }),
+        tenantId: user.tenantId,
+      });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_work_schedule_list")
   );
@@ -59,6 +72,9 @@ export function registerOvertimeWorkScheduleTools(server) {
     withToolError(async ({ date }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // Lists who in the company has no roster: an HR surface (HR-ROSTER-SCOPE-01).
+      if (!resolveAttendanceReadScope(user, permissions).canViewOthers)
+        throw Object.assign(new Error("Insufficient permissions: roster coverage is an HR view"), { status: 403, code: "HR-4030" });
       const data = await getRosterCoverage({ tenantId: user.tenantId, date });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_work_schedule_coverage")

@@ -107,3 +107,20 @@ describe('HR-ROSTER-03 schedule pattern validation', () => {
         expect(ok(undefined).valid).toBe(false);
     });
 });
+
+describe('HR-ATT-ONCALL-03 — onCallDays', () => {
+  const base = { shift: { from: '09:00', to: '17:00' }, offDays: [6, 7] };
+  it('accepts an off day as the on-call day', () => {
+    expect(validateSchedulePattern({ ...base, onCallDays: [6] }).valid).toBe(true);
+  });
+  it('refuses a working day, a non-weekday and duplicates', () => {
+    const { errors } = validateSchedulePattern({ ...base, onCallDays: [3, 9, 6, 6] });
+    expect(errors.join(' ')).toMatch(/3 is a working day/);
+    expect(errors.join(' ')).toMatch(/9 is not an ISO weekday/);
+    expect(errors.join(' ')).toMatch(/duplicate/);
+  });
+  it('lets a rotation name the weekdays its rest days may be called in', () => {
+    const rotation = { rotatingShifts: [{ from: '09:00', to: '17:00' }], cycle: { days: 3, anchor: '2026-12-01', sequence: [0, 0, null] } };
+    expect(validateSchedulePattern({ ...rotation, onCallDays: [6] }).valid).toBe(true);
+  });
+});

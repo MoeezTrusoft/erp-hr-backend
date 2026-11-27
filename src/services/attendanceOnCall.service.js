@@ -14,6 +14,33 @@
 // instead of doubling the day.
 import prisma from "../lib/prisma.js";
 import logger from "../lib/logger.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { dateKey } from "../lib/attendanceDates.js";
+import { todayInZone } from "../lib/holidayDates.js";
+import { assertAttendancePeriodOpen } from "./attendancePeriod.service.js";
+import { enqueueEvaluationRange } from "./attendanceFinalization.service.js";
+
+// HR-ATT-ONCALL-02 — a call-in changes whether a day is worked, so it follows the
+// same rules as every other attendance-changing write (roster, leave, holiday):
+//   • refused while a payroll run covers the day (recall or cancel it first);
+//   • a day already evaluated (today or earlier) is re-queued in the same
+//     transaction, so marking last Saturday on Monday turns a no-show into
+//     ABSENT, and cancelling it turns the day back into an off day.
+// A future day needs no job: the daily planner evaluates it when it arrives.
+async function requeueIfEvaluated(tx, tenantId, employeeId, day) {
+  if (dateKey(day) > dateKey(todayInZone())) return false;
+  await enqueueEvaluationRange({ tenantId, from: day, to: day, employeeIds: [employeeId] }, tx);
+  await tx.attendanceEvaluationJob.updateMany({
+    where: { tenantId, employeeId, date: day },
+    data: { state: "PENDING", attempts: 0, nextAttemptAt: new Date(), lastError: null, completedAt: null },
+  });
+  return true;
+}
+
+const requireTenant = (tenantId) => {
+  if (!tenantId) throw Object.assign(new Error("Tenant is required"), { status: 401, code: "HR-4010" });
+  return tenantId;
+};
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -30,41 +57,49 @@ const DTO = { id: true, employeeId: true, date: true, reason: true, calledBy: tr
  * Record (or refresh) a call-in for one employee-day.
  * tenantScope stamps tenantId on create and scopes every read.
  */
-export async function createCallIn({ employeeId, date, reason, calledBy }) {
+export async function createCallIn({ employeeId, date, reason, calledBy, tenantId }) {
   const id = Number(employeeId);
   if (!Number.isInteger(id) || id <= 0) {
     throw Object.assign(new Error("employeeId: expected a positive integer"), { status: 400, code: "HR-4000" });
   }
   const day = parseDay(date);
+  requireTenant(tenantId);
 
-  // Tenant-scoped: an employee outside the caller's tenant reads as not found,
-  // never as a cross-tenant write.
-  const employee = await prisma.employee.findFirst({
-    where: { id },
-    select: { id: true, employee_code: true },
-  });
-  if (!employee) {
-    throw Object.assign(new Error(`employee ${id} not found`), { status: 404, code: "HR-4040" });
-  }
-
-  const existing = await prisma.attendanceCallIn.findFirst({
-    where: { employeeId: id, date: day },
-    select: { id: true },
-  });
-
-  const row = existing
-    ? await prisma.attendanceCallIn.update({
-        where: { id: existing.id },
-        data: { reason: reason ?? null, calledBy: calledBy ?? null },
-        select: DTO,
-      })
-    : await prisma.attendanceCallIn.create({
-        data: { employeeId: id, date: day, reason: reason ?? null, calledBy: calledBy ?? null },
-        select: DTO,
+  const result = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      await assertAttendancePeriodOpen(tx, tenantId, day, day);
+      // Tenant-scoped: an employee outside the caller's tenant reads as not found,
+      // never as a cross-tenant write.
+      const employee = await tx.employee.findFirst({
+        where: { id, tenant_id: tenantId },
+        select: { id: true, employee_code: true },
       });
+      if (!employee) {
+        throw Object.assign(new Error(`employee ${id} not found`), { status: 404, code: "HR-4040" });
+      }
+      const existing = await tx.attendanceCallIn.findFirst({
+        where: { tenantId, employeeId: id, date: day },
+        select: { id: true },
+      });
+      const row = existing
+        ? await tx.attendanceCallIn.update({
+            where: { id: existing.id },
+            data: { reason: reason ?? null, calledBy: calledBy ?? null },
+            select: DTO,
+          })
+        : await tx.attendanceCallIn.create({
+            data: { tenantId, employeeId: id, date: day, reason: reason ?? null, calledBy: calledBy ?? null },
+            select: DTO,
+          });
+      const reevaluated = existing ? false : await requeueIfEvaluated(tx, tenantId, id, day);
+      return { ...row, employeeName: employee.employee_code || "Employee code required", reevaluated };
+    },
+    { tenantId },
+  );
 
-  logger.info({ employeeId: id, date: day, id: row.id }, "on-call call-in recorded");
-  return { ...row, employeeName: employee.employee_code || "Employee code required" };
+  logger.info({ employeeId: id, date: day, id: result.id, reevaluated: result.reevaluated }, "on-call call-in recorded");
+  return result;
 }
 
 /** Call-ins in a window (optionally one employee). */
@@ -112,31 +147,30 @@ export async function listCallIns({ from, to, employeeId } = {}) {
 }
 
 /**
- * Cancel a call-in. The day falls back to the roster; any ABSENT row the
- * no-show path wrote for it (not HR-corrected) is reverted to WEEKLY_OFF so a
- * cancelled call-in never keeps charging the employee.
+ * Cancel a call-in. The day falls back to the roster and, when it was already
+ * evaluated, is re-queued so a no-show ABSENT becomes the off day again. (The
+ * old revert matched a remark the interval evaluator no longer writes, so it
+ * never fired and a cancelled call-in kept charging the employee.)
  */
-export async function removeCallIn({ id }) {
+export async function removeCallIn({ id, tenantId }) {
   const rowId = Number(id);
   if (!Number.isInteger(rowId) || rowId <= 0) {
     throw Object.assign(new Error("id: expected a positive integer"), { status: 400, code: "HR-4000" });
   }
+  requireTenant(tenantId);
 
-  const row = await prisma.attendanceCallIn.findFirst({ where: { id: rowId } });
-  if (!row) throw Object.assign(new Error(`call-in ${rowId} not found`), { status: 404, code: "HR-4040" });
-
-  const reverted = await prisma.attendance.updateMany({
-    where: {
-      employeeId: row.employeeId,
-      date: row.date,
-      status: "ABSENT",
-      manually_corrected: false,
-      remarks: "Called in (on-call) with no attendance recorded",
+  const result = await tenantTransaction(
+    prisma,
+    async (tx) => {
+      const row = await tx.attendanceCallIn.findFirst({ where: { id: rowId, tenantId } });
+      if (!row) throw Object.assign(new Error(`call-in ${rowId} not found`), { status: 404, code: "HR-4040" });
+      await assertAttendancePeriodOpen(tx, tenantId, row.date, row.date);
+      await tx.attendanceCallIn.delete({ where: { id: rowId } });
+      const reevaluated = await requeueIfEvaluated(tx, tenantId, row.employeeId, row.date);
+      return { deleted: true, id: rowId, employeeId: row.employeeId, reevaluated };
     },
-    data: { status: "WEEKLY_OFF", day_credit: 0, requires_regularization: false, remarks: null },
-  });
-
-  await prisma.attendanceCallIn.delete({ where: { id: rowId } });
-  logger.info({ id: rowId, employeeId: row.employeeId, reverted: reverted.count }, "on-call call-in cancelled");
-  return { deleted: true, id: rowId, revertedAbsences: reverted.count };
+    { tenantId },
+  );
+  logger.info(result, "on-call call-in cancelled");
+  return { deleted: true, id: rowId, reevaluated: result.reevaluated };
 }

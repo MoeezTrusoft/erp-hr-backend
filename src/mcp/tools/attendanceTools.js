@@ -560,7 +560,6 @@ export function registerAttendanceTools(server) {
       employeeId: z.coerce.number().int().positive().describe("Employee who was called in (references Employee)"),
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD").describe("The called-in calendar day"),
       reason: z.string().max(500).optional().describe("Why they were called in (e.g. 'weekend site cover')"),
-      calledBy: z.string().max(200).optional().describe("Who called them in; defaults to the acting user"),
     },
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
@@ -569,7 +568,10 @@ export function registerAttendanceTools(server) {
         employeeId: args.employeeId,
         date: args.date,
         reason: args.reason,
-        calledBy: args.calledBy ?? user.name ?? user.email ?? null,
+        // The verified caller, never a client string: the timesheet resolves a
+        // user id to the caller's employee code (attendanceActorCodes).
+        calledBy: user.userId != null ? String(user.userId) : null,
+        tenantId: user.tenantId,
       });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
@@ -598,7 +600,7 @@ export function registerAttendanceTools(server) {
     withToolError(async ({ id }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "DELETE", "hr:attendance", user.isAdmin);
-      const data = await removeCallIn({ id });
+      const data = await removeCallIn({ id, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
