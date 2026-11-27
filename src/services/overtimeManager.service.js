@@ -18,6 +18,7 @@ import { shiftForEmployee, validateEmployeeShiftSequence, syncCurrentShiftSuperv
 import { assertRosterPeriodEditable } from './workScheduleService.js';
 import { dateKey } from '../lib/attendanceDates.js';
 import { civilNow } from '../lib/attendanceClock.js';
+import { scheduledShifts } from '../lib/attendanceShift.js';
 
 // Fallback monthly overtime limit (hours) when the tenant has no OvertimeRule.
 const DEFAULT_MONTHLY_LIMIT_HOURS = 40;
@@ -51,6 +52,38 @@ const weekStartOf = (now = new Date()) => {
   const diff = dow === 0 ? -6 : 1 - dow; // shift back to Monday
   d.setDate(d.getDate() + diff);
   return d;
+};
+
+// HR-OT-ROSTER-01 — what each person's ROSTER (work-schedule pattern) says for a
+// set of days. Per-date shift_assignments rows exist only where HR assigned a day
+// (an August import in production), so reading them alone showed every current
+// week as empty. A per-date row, where one exists, still wins.
+const rosterDays = async (tenantId, employeeIds, dates) => {
+  const first = new Date(`${dates[0]}T00:00:00.000Z`);
+  const last = new Date(`${dates.at(-1)}T00:00:00.000Z`);
+  const rosters = await prisma.workSchedule.findMany({
+    where: scopedWhere(tenantId, {
+      ...(employeeIds != null ? { employeeId: { in: employeeIds } } : {}),
+      effective_start_date: { lte: last },
+      OR: [{ effective_end_date: null }, { effective_end_date: { gte: first } }],
+    }),
+    select: { employeeId: true, effective_start_date: true, effective_end_date: true, schedule_pattern: true },
+  });
+  const out = new Map();
+  for (const dk of dates) {
+    const day = new Date(`${dk}T00:00:00.000Z`);
+    for (const r of rosters) {
+      const from = r.effective_start_date.toISOString().slice(0, 10);
+      const to = r.effective_end_date ? r.effective_end_date.toISOString().slice(0, 10) : null;
+      if (from > dk || (to && to < dk)) continue;
+      const shift = scheduledShifts(r.schedule_pattern || {}, day)[0];
+      if (!out.has(r.employeeId)) out.set(r.employeeId, new Map());
+      out.get(r.employeeId).set(dk, shift?.start
+        ? { status: 'on_shift', fromTime: shift.start.toISOString().slice(11, 16), toTime: shift.end?.toISOString().slice(11, 16) ?? null }
+        : { status: 'off', fromTime: null, toTime: null });
+    }
+  }
+  return out;
 };
 
 // Resolve the tenant's monthly overtime limit (hours) from OvertimeRule.
@@ -107,12 +140,18 @@ export const getOvertimeManagerOverview = async (_args, tenantId) => {
   const [teamTotal, onShiftNow, pendingApprovals, approvedThisMonth, monthlyLimit] =
     await Promise.all([
       prisma.employee.count({ where: scopedEmployeeWhere(tenantId, {}) }),
-      prisma.shiftAssignment.count({
-        where: scopedWhere(tenantId, {
-          status: "on_shift",
-          date: { gte: todayStart, lt: todayEnd },
-        }),
-      }),
+      // HR-OT-ROSTER-01 — per-date rows today, else what each roster says for today.
+      (async () => {
+        const today = dayKey(todayStart);
+        const rows = await prisma.shiftAssignment.findMany({
+          where: scopedWhere(tenantId, { date: { gte: todayStart, lt: todayEnd } }),
+          select: { employeeId: true, status: true },
+        });
+        const decided = new Map(rows.map((r) => [r.employeeId, r.status === "on_shift"]));
+        for (const [employeeId, days] of await rosterDays(tenantId, null, [today]))
+          if (!decided.has(employeeId)) decided.set(employeeId, days.get(today)?.status === "on_shift");
+        return [...decided.values()].filter(Boolean).length;
+      })(),
       prisma.overtimeRequest.count({
         where: scopedWhere(tenantId, { status: "PENDING" }),
       }),
@@ -148,7 +187,7 @@ export const getOvertimeManagerOverview = async (_args, tenantId) => {
  * Weekly team roster (7 days from the week start). One row per employee with a
  * `days` array; days with no ShiftAssignment default to status "off".
  */
-export const getShiftRosterWeek = async ({ department, weekStart } = {}, tenantId) => {
+export const getShiftRosterWeek = async ({ department, weekStart, employeeId } = {}, tenantId) => {
   const start = weekStart ? weekStartOf(new Date(weekStart)) : weekStartOf();
   const end = new Date(start);
   end.setDate(end.getDate() + 7);
@@ -159,7 +198,8 @@ export const getShiftRosterWeek = async ({ department, weekStart } = {}, tenantI
     return dayKey(d);
   });
 
-  const deptIds = await departmentEmployeeIds(department, tenantId);
+  // An employee's own week (the tool pins non-HR callers); otherwise the department or the company.
+  const deptIds = employeeId != null ? [Number(employeeId)] : await departmentEmployeeIds(department, tenantId);
   if (deptIds != null && deptIds.length === 0) return { weekStart: dayKey(start), roster: [] };
 
   const assignments = await prisma.shiftAssignment.findMany({
@@ -170,7 +210,18 @@ export const getShiftRosterWeek = async ({ department, weekStart } = {}, tenantI
     orderBy: { date: "asc" },
   });
 
-  const empIds = deptIds != null ? deptIds : [...new Set(assignments.map((a) => a.employeeId))];
+  const planned = await rosterDays(tenantId, deptIds, dates);
+  const approvedOt = await prisma.overtimeRequest.findMany({
+    where: scopedWhere(tenantId, {
+      status: "APPROVED",
+      date: { gte: new Date(`${dates[0]}T00:00:00.000Z`), lte: new Date(`${dates[6]}T00:00:00.000Z`) },
+      ...(deptIds != null ? { employeeId: { in: deptIds } } : {}),
+    }),
+    select: { employeeId: true, date: true, hours: true },
+  });
+  const otByEmpDay = new Map(approvedOt.map((o) => [`${o.employeeId}:${o.date.toISOString().slice(0, 10)}`, o.hours]));
+
+  const empIds = deptIds != null ? deptIds : [...new Set([...assignments.map((a) => a.employeeId), ...planned.keys()])];
   const empMap = await employeesById(empIds, tenantId);
 
   // Index assignments by employeeId -> dayKey -> row.
@@ -185,6 +236,9 @@ export const getShiftRosterWeek = async ({ department, weekStart } = {}, tenantI
       const dayMap = byEmpDay.get(e.id) || new Map();
       const days = dates.map((dk) => {
         const a = dayMap.get(dk);
+        const ot = otByEmpDay.get(`${e.id}:${dk}`);
+        const p = planned.get(e.id)?.get(dk);
+        if (!a && p) return { date: dk, shiftType: null, workMode: null, ...p, overtimeHours: ot ?? 0 };
         return a
           ? {
               date: dk,
@@ -193,7 +247,7 @@ export const getShiftRosterWeek = async ({ department, weekStart } = {}, tenantI
               status: a.status,
               fromTime: a.fromTime ?? null,
               toTime: a.toTime ?? null,
-              overtimeHours: a.overtimeHours ?? 0,
+              overtimeHours: ot ?? a.overtimeHours ?? 0,
             }
           : {
               date: dk,

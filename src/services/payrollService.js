@@ -535,8 +535,15 @@ export const buildPayslipFromInputs = ({ employee, employmentTerm, assignments =
     // 2) BRIDGE: Overtime → Earning (approved OT hours × hourly rate × OT multiplier)
     if (bridges.overtimeLines?.length > 0 && employmentTerm) {
         const monthlyBaseMinor = money.decimalToMinor(employmentTerm.baseSalary || '0', currency);
-        const hourlyMinor = monthlyBaseMinor / 176n; // ~22 working days × 8 hours
         for (const ot of bridges.overtimeLines) {
+            // HR-OT-PAY-01: the hourly rate comes from the hours the person's roster
+            // works (weekly hours × 52 / 12 a month). 176 (22 days × 8 h) is only the
+            // fallback for a day with no roster: a 45-hour week works ~195 hours, so
+            // 176 overpaid every overtime hour by about 11%.
+            const weekly = Number(ot.weeklyHours);
+            const hourlyMinor = weekly > 0
+                ? (monthlyBaseMinor * 1200n) / BigInt(Math.round(weekly * 5200))
+                : monthlyBaseMinor / 176n;
             const otAmountMinor = BigInt(Math.round(ot.hours * Number(hourlyMinor) * (ot.rate || 1.5)));
             if (otAmountMinor > 0n) {
                 earnings.push({
@@ -1500,6 +1507,19 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                 }),
             ]);
 
+            // The rosters in force on the overtime days set the hourly rate (HR-OT-PAY-01).
+            const overtimeRosters = overtimeRequests.length
+                ? await prisma.workSchedule.findMany({
+                    where: withTenant(tenantId, {
+                        employeeId: employee.id,
+                        effective_start_date: { lte: payrollRun.periodEnd },
+                        OR: [{ effective_end_date: null }, { effective_end_date: { gte: payrollRun.periodStart } }],
+                    }),
+                    select: { effective_start_date: true, effective_end_date: true, total_hours_per_week: true },
+                    orderBy: { effective_start_date: 'desc' },
+                })
+                : [];
+
             // Build bridge data
             const previousSlip=await prisma.payrollPayslip.findFirst({where:{tenantId,payrollRunId:id,employeeId:employee.id}});
             if (!preview) await releaseFailedCarry(prisma,{tenantId,employeeId:employee.id});
@@ -1518,6 +1538,8 @@ export const processPayrollRun = async (id, updatedBy, tenantId, options = {}) =
                     date: ot.date?.toISOString().split('T')[0],
                     hours: ot.hours,
                     rate: ot.rate,
+                    weeklyHours: overtimeRosters.find(r =>
+                        r.effective_start_date <= ot.date && (!r.effective_end_date || r.effective_end_date >= ot.date))?.total_hours_per_week ?? null,
                 })),
                 // Unpaid (UNPAID/LWP) approved leave days in the period; a legacy request without day rows keeps
                 // its old share totalDays*overlap/span (approvedLeaveDays weights).

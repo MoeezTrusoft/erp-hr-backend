@@ -15,6 +15,7 @@
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertSeesTeamOvertime } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   getOvertimeTable,
@@ -56,6 +57,8 @@ export function registerOvertimeShiftReportTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await getOvertimeTable({ ...args, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_table")
@@ -68,6 +71,8 @@ export function registerOvertimeShiftReportTools(server) {
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await getOvertimeTrend6mo({ tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_trend")
@@ -113,6 +118,8 @@ export function registerOvertimeShiftReportTools(server) {
     withToolError(async () => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      // HR-OT-SCOPE-01 — company-wide overtime figures are an HR view.
+      assertSeesTeamOvertime(user, permissions);
       const data = await getAtRiskEmployees({ tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_overtime_at_risk")

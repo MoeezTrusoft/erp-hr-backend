@@ -9,7 +9,7 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 const TENANT = '40314ef4-0a81-4390-b631-b3ad3f21f523';
 const REQUESTER = 100, MANAGER = 200, FINANCE = 300;
 
-let matrix, requests, approvals, assignments, punches;
+let matrix, requests, approvals, assignments, punches, roster;
 
 const prismaMock = {
     $executeRaw: jest.fn(),
@@ -30,7 +30,22 @@ const prismaMock = {
         create: jest.fn(async ({ data }) => { assignments.push(data); return data; }),
     },
     attendanceDevicePunch: { findMany: jest.fn(async () => punches) },
+    employee: { findFirst: jest.fn(async ({ where }) => (where.id ? { id: where.id } : null)) },
+    workSchedule: { findFirst: jest.fn(async () => roster) },
 };
+prismaMock.overtimeRequest.aggregate = jest.fn(async () => ({
+    _sum: { hours: requests.filter((r) => ['PENDING', 'APPROVED'].includes(r.status)).reduce((n, r) => n + r.hours, 0) || null },
+}));
+prismaMock.overtimeRequest.deleteMany = jest.fn(async ({ where }) => {
+    const before = requests.length;
+    requests = requests.filter((r) => r.id !== where.id);
+    return { count: before - requests.length };
+});
+const legacySubmit = jest.fn(async () => ({}));
+jest.unstable_mockModule('../../src/services/approval/legacy.js', () => ({
+    legacySubmit, legacyDecision: jest.fn(async () => { throw Object.assign(new Error('Verified employee identity required'), { status: 401 }); }),
+    legacyWithdraw: jest.fn(),
+}));
 
 jest.unstable_mockModule('../../src/lib/prisma.js', () => ({ default: prismaMock }));
 jest.unstable_mockModule('../../src/lib/rlsTenant.js', () => ({
@@ -50,7 +65,7 @@ beforeEach(() => {
         { level: 1, role: 'MANAGER', approverId: MANAGER, status: 'ACTIVE' },
         { level: 2, role: 'FINANCE', approverId: FINANCE, status: 'ACTIVE' },
     ];
-    requests = []; approvals = []; assignments = []; punches = [];
+    requests = []; approvals = []; assignments = []; punches = []; roster = null;
 });
 
 const raise = () => ot.createOvertimeRequest({
@@ -94,7 +109,9 @@ describe('HR-OT-APPROVAL-01 payroll only sees approved hours', () => {
     it('leaves pending hours out of payroll and blocks the legacy direct decision', async()=>{const {request}=await raise();await expect(ot.decideOvertimeRequest({tenantId:TENANT,requestId:request.id,approverId:MANAGER,decision:'APPROVED'})).rejects.toMatchObject({status:401});expect(request.status).toBe('PENDING');expect(assignments).toHaveLength(0);});
     it('writes hours at final Management approval to the existing roster',async()=>{const {request}=await raise();assignments.push({id:1,overtimeHours:0});await finalize(request,true);expect(request.status).toBe('APPROVED');expect(assignments[0].overtimeHours).toBe(3);});
     it('Management rejection leaves payroll untouched',async()=>{const {request}=await raise();await finalize(request,false);expect(request.status).toBe('REJECTED');expect(assignments).toHaveLength(0);});
-    it('refuses final approval without a roster',async()=>{const {request}=await raise();await expect(finalize(request,true)).rejects.toThrow('Configure the roster');expect(request.status).toBe('PENDING');expect(assignments).toHaveLength(0);});
+    // HR-OT-APPROVE-01: payroll pays the approved request itself; a missing per-date shift row (most days: rosters are
+    // patterns) must not refuse the approval. It used to fail with "Configure the roster before approving overtime".
+    it('approves without a per-date shift row and leaves the roster rows alone',async()=>{const {request}=await raise();await finalize(request,true);expect(request.status).toBe('APPROVED');expect(assignments).toHaveLength(0);expect(prismaMock.shiftAssignment.update).not.toHaveBeenCalled();});
 });
 
 describe('HR-OT-APPROVAL-01 detection from device punches', () => {
@@ -126,5 +143,52 @@ describe('HR-OT-APPROVAL-01 detection from device punches', () => {
         const s = await ot.detectOvertimeFromPunches({ tenantId: TENANT, from: '2026-08-01', to: '2026-08-31' });
 
         expect(s.details[0]).toMatchObject({ date: '2026-08-14', hours: 3 });
+    });
+});
+
+describe('HR-OT-RULE-01 the roster\'s overtime rule', () => {
+    const rule = { name: 'Factory OT', is_active: true, daily_overtime_rate: 2, max_hours_per_day: 4, max_hours_per_week: 6 };
+    it('seals the rule\'s rate on the request (1.5 without a rule)', async () => {
+        expect((await raise()).request.rate).toBe(1.5);
+        requests = [];
+        roster = { overtimeRule: rule };
+        expect((await raise()).request.rate).toBe(2);
+    });
+    it('ignores a retired rule', async () => {
+        roster = { overtimeRule: { ...rule, is_active: false } };
+        expect((await raise()).request.rate).toBe(1.5);
+    });
+    it('refuses more than the rule\'s daily cap', async () => {
+        roster = { overtimeRule: rule };
+        await expect(ot.createOvertimeRequest({ tenantId: TENANT, employeeId: REQUESTER, date: '2026-08-14', hours: 5, reason: 'x' }))
+            .rejects.toThrow('at most 4 hours a day');
+    });
+    it('refuses going past the weekly cap, counting live requests that week', async () => {
+        roster = { overtimeRule: rule };
+        await raise(); // 3 h on Fri 14 Aug
+        await expect(ot.createOvertimeRequest({ tenantId: TENANT, employeeId: REQUESTER, date: '2026-08-15', hours: 4, reason: 'x' }))
+            .rejects.toThrow('at most 6 hours a week; 3 are already requested');
+    });
+    it('refuses an employee outside the company', async () => {
+        prismaMock.employee.findFirst.mockResolvedValueOnce(null);
+        await expect(raise()).rejects.toMatchObject({ status: 404 });
+    });
+});
+
+describe('HR-OT-SUBMIT-01 filing sends it for approval', () => {
+    it('an employee\'s own request is submitted at once', async () => {
+        const r = await ot.createOvertimeRequest({ tenantId: TENANT, employeeId: REQUESTER, date: '2026-08-14', hours: 2, reason: 'release night', submit: 'self' });
+        expect(r).toMatchObject({ submitted: true });
+        expect(legacySubmit).toHaveBeenCalledWith('OVERTIME', r.request.id, 'release night', {});
+    });
+    it('HR filing for an employee submits on their behalf', async () => {
+        await ot.createOvertimeRequest({ tenantId: TENANT, employeeId: REQUESTER, date: '2026-08-14', hours: 2, reason: 'cover', submit: 'onBehalf' });
+        expect(legacySubmit).toHaveBeenCalledWith('OVERTIME', 1, 'cover', { onBehalf: true });
+    });
+    it('if the approval cannot be opened, the request is removed, not left orphaned', async () => {
+        legacySubmit.mockRejectedValueOnce(Object.assign(new Error('Publish the route'), { status: 409 }));
+        await expect(ot.createOvertimeRequest({ tenantId: TENANT, employeeId: REQUESTER, date: '2026-08-14', hours: 2, reason: 'x', submit: 'self' }))
+            .rejects.toMatchObject({ status: 409 });
+        expect(requests).toHaveLength(0);
     });
 });
