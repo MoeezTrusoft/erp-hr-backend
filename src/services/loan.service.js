@@ -11,6 +11,8 @@ import { assertNoPayrollLoanReservation } from "./payrollLoans.service.js";
 export const LOAN_KINDS = ["LOAN", "ADVANCE"];
 
 const MAX_TENURE_MONTHS = 120;
+/** Statuses of a loan that was approved and paid out (everything but PENDING and REJECTED). */
+export const DISBURSED_STATUSES = ["ACTIVE", "PAID_OFF", "WRITTEN_OFF", "DEFAULTED"];
 const MAX_PRINCIPAL_MINOR = 100_000_000_000; // 1 billion in major units: a typo guard, not a policy
 const MAX_DAYS_AHEAD = 366;
 const bad = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -256,7 +258,8 @@ export const writeOffLoan = async (id, tenantId) => {
 export const getLoanKpis = async (tenantId) => {
     const [activeCount, totalDisbursed, totalOutstanding, paidOffCount, activeAdvances, advancesOutstanding] = await Promise.all([
         prisma.loan.count({ where: scopedWhere(tenantId, { kind: "LOAN", status: "ACTIVE" }) }),
-        prisma.loan.aggregate({ where: scopedWhere(tenantId, { kind: "LOAN" }), _sum: { principalMinor: true } }),
+        // Disbursed means approved and paid out: a pending or rejected request was never given (HR-LOAN-KPI-01).
+        prisma.loan.aggregate({ where: scopedWhere(tenantId, { kind: "LOAN", status: { in: DISBURSED_STATUSES } }), _sum: { principalMinor: true } }),
         prisma.loan.aggregate({ where: scopedWhere(tenantId, { kind: "LOAN", status: "ACTIVE" }), _sum: { outstandingMinor: true } }),
         prisma.loan.count({ where: scopedWhere(tenantId, { kind: "LOAN", status: "PAID_OFF" }) }),
         prisma.loan.count({ where: scopedWhere(tenantId, { kind: "ADVANCE", status: "ACTIVE" }) }),

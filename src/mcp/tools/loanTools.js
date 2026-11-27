@@ -33,7 +33,7 @@ export function registerLoanTools(server) {
     "List loans and salary advances with optional employee/status/kind filter and pagination",
     {
       employeeId: z.union([z.string(), z.number()]).optional().describe("Filter by employee ID"),
-      status: z.enum(["ACTIVE", "PAID_OFF", "WRITTEN_OFF", "DEFAULTED"]).optional().describe("Filter by loan status"),
+      status: z.enum(["PENDING", "REJECTED", "WITHDRAWN", "ACTIVE", "PAID_OFF", "WRITTEN_OFF", "DEFAULTED"]).optional().describe("Filter by loan status"),
       kind: z.enum(["LOAN", "ADVANCE"]).optional().describe("Filter by kind: LOAN or ADVANCE (salary advance). Omit for both"),
       page: z.coerce.number().int().positive().optional().describe("Page number (default 1)"),
       pageSize: z.coerce.number().int().positive().optional().describe("Page size (default 20)"),

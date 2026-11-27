@@ -191,7 +191,8 @@ test(
       async () => {
         const { legacyWithdraw } =
           await import("../../src/services/approval/legacy.js");
-        for (const kind of ["LEAVE", "OVERTIME", "CLAIM"])
+        // HR-LOAN-WITHDRAW-01: a loan or advance request is withdrawn like the others.
+        for (const kind of ["LEAVE", "OVERTIME", "CLAIM", "LOAN"])
           for (const stage of [
             "LINE_MANAGER",
             "HR",

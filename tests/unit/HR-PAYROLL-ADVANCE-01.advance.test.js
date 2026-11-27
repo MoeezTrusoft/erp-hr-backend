@@ -136,6 +136,14 @@ describe('HR-PAYROLL-ADVANCE-01 loan.service', () => {
         expect(kpis).toHaveProperty('advancesOutstanding');
         expect(countCalls.some((w) => w.kind === 'ADVANCE')).toBe(true);
     });
+
+    it('HR-LOAN-KPI-01: "disbursed" sums only loans that were approved, never pending or rejected requests', async () => {
+        await loanService.getLoanKpis(TENANT);
+        const disbursed = aggregateCalls.find((w) => w.kind === 'LOAN' && w.status?.in);
+        expect(disbursed.status.in).toEqual(['ACTIVE', 'PAID_OFF', 'WRITTEN_OFF', 'DEFAULTED']);
+        // every LOAN aggregate is narrowed by status — none sums every request ever made
+        expect(aggregateCalls.filter((w) => w.kind === 'LOAN').every((w) => w.status)).toBe(true);
+    });
 });
 
 // ── 4. MCP tools ────────────────────────────────────────────────────────────

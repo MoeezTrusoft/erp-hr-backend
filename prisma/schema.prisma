@@ -2666,6 +2666,7 @@ enum LoanKind {
 enum LoanStatus {
   PENDING
   REJECTED
+  WITHDRAWN
   ACTIVE
   PAID_OFF
   WRITTEN_OFF

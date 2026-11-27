@@ -332,7 +332,7 @@ async function actionsFor(tx, env, row) {
     return permits(env, "self")
       ? [
           ...(row.stage === "INITIATOR" ? ["SUBMIT"] : []),
-          ...(["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP"].includes(row.kind)
+          ...(["LEAVE", "OVERTIME", "CLAIM", "SHIFT_SWAP", "LOAN"].includes(row.kind)
             ? ["WITHDRAW"]
             : []),
         ]
