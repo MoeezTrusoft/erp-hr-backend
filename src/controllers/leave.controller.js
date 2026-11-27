@@ -2,12 +2,22 @@ import * as leaveService from '../services/leave.service.js';
 import { createRequisitionController } from './requisition.controller.js';
 import { respondServerError, respondPreconditionAware } from '../utils/httpError.js';
 import { requireEmployeeActor } from '../lib/employeeActor.js';
+import { mcpCtx } from '../mcp/context.js';
+import { canViewOthersLeave } from '../mcp/utils/actorScope.js';
 
 // C.2 / T-P2.2 — the verified tenant arrives on req.user.tenantId (set by
 // internalServiceGuard from the signed service-JWT claim; T-P2.1) — NEVER from
 // a request header. Threaded into the scoped leave service calls so tenant B
 // cannot read/mutate tenant A's leave rows.
 const tenantOf = (req) => req.user?.tenantId ?? null;
+
+// HR-LEAVE-SCOPE-02 — who may read OTHER employees' leave. Every employee holds
+// hr:leave VIEW, so neither that grant nor the first role name may widen a read.
+// It takes the HR admin surface or a write-class leave grant (canViewOthersLeave).
+// REST carries the verified scope on req.user.permissions; an MCP call carries
+// it on the ambient context.
+const seesWholeCompany = (req) =>
+  canViewOthersLeave(req.user, req.user?.permissions ?? mcpCtx.getStore()?.permissions);
 
 export const getLeavePolicies = async (req, res) => {
   try {
@@ -73,7 +83,7 @@ export const getLeaveRequests = async (req, res) => {
   try {
     const filters = { ...req.query };
     // If user is not HR/Manager, only show their own requests
-    if (req.user.role === 'EMPLOYEE') {
+    if (!seesWholeCompany(req)) {
       const self = await requireEmployeeActor(req.user);
       if (filters.involvingEmployeeId != null) {
         // Issue 395 — "my rows + the ones I raised for someone else". The id is
@@ -102,7 +112,7 @@ export const getLeaveRequestById = async (req, res) => {
     }
 
     // Check if user has permission to view this request
-    if (req.user.role === 'EMPLOYEE' && request.employeeId !== await requireEmployeeActor(req.user)) {
+    if (!seesWholeCompany(req) && !(await ownsOrRaised(req, request))) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
 
@@ -147,9 +157,20 @@ export const cancelLeaveRequest = async (req, res) => {
   }
 };
 
+// A non-HR viewer may see a request they are the subject of, or one they raised
+// on someone's behalf (Issue 395 — line manager).
+const ownsOrRaised = async (req, request) => {
+  const self = await requireEmployeeActor(req.user);
+  return self != null && (request.employeeId === self || request.createdById === self);
+};
+
 export const getPendingApprovals = async (req, res) => {
   try {
-    const approvals = await leaveService.getPendingApprovals(await requireEmployeeActor(req.user), req.user.role);
+    // The tenant-wide pending queue is an HR surface; anyone else sees only
+    // their own pending requests (decisions live in the HR Approval Centre).
+    // -1 matches no row: an unbound non-HR caller gets an empty queue.
+    const onlyEmployeeId = seesWholeCompany(req) ? null : (await requireEmployeeActor(req.user)) ?? -1;
+    const approvals = await leaveService.getPendingApprovals({ onlyEmployeeId });
     res.json({ success: true, data: approvals });
   } catch (error) {
     respondServerError(req, res, error);
@@ -158,6 +179,12 @@ export const getPendingApprovals = async (req, res) => {
 
 export const getLeaveRequestApprovals = async (req, res) => {
   try {
+    if (!seesWholeCompany(req)) {
+      const request = await leaveService.getLeaveRequestById(parseInt(req.params.id), tenantOf(req));
+      if (!request || !(await ownsOrRaised(req, request))) {
+        return res.status(404).json({ success: false, error: 'Leave request not found' });
+      }
+    }
     const approvals = await leaveService.getLeaveRequestApprovals(parseInt(req.params.id));
     res.json({ success: true, data: approvals });
   } catch (error) {
@@ -206,7 +233,10 @@ export const rejectLeaveRequest = async (req, res) => {
 
 export const getLeaveBalances = async (req, res) => {
   try {
-    const balances = await leaveService.getLeaveBalances(req.query);
+    const filters = { ...req.query };
+    // Tenant-wide balances are an HR surface; anyone else gets only their own.
+    if (!seesWholeCompany(req)) filters.employeeId = (await requireEmployeeActor(req.user)) ?? -1;
+    const balances = await leaveService.getLeaveBalances(filters);
     res.json({ success: true, data: balances });
   } catch (error) {
     respondServerError(req, res, error);
@@ -216,7 +246,7 @@ export const getLeaveBalances = async (req, res) => {
 export const getEmployeeLeaveBalances = async (req, res) => {
   try {
     // Employees can only view their own balances
-    const employeeId = req.user.role === 'EMPLOYEE'
+    const employeeId = !seesWholeCompany(req)
       ? await requireEmployeeActor(req.user)
       : parseInt(req.params.employeeId);
 

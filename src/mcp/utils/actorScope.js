@@ -166,3 +166,15 @@ export function assertPayslipOwnership({ slip, actingEmployeeId, canViewOthers, 
     throw Object.assign(new Error("No payslip found for this employee"), { status: 404, code: HR_ERRORS.NOT_FOUND.code });
   }
 }
+
+// HR-LEAVE-SCOPE-02 — may this session read OTHER employees' leave (requests,
+// balances, pending queue, approval history)? Every employee holds hr:leave
+// VIEW, so a read grant (or a role name) never widens the scope: it takes the
+// HR admin surface above, or a write-class leave grant (the people who manage
+// leave for others).
+export function canViewOthersLeave(user, permissions) {
+  return (
+    resolveActorScope(user, permissions).canViewOthers ||
+    ADMIN_SURFACE_ACTIONS.some((action) => hasPermission(permissions, "hr:leave", action))
+  );
+}
