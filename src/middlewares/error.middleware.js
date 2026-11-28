@@ -53,6 +53,20 @@ export function normalizeError(err) {
         };
     }
 
+    // HR-ATT-LOCK-01 — the attendance payroll-lock trigger raises PERIOD_PROTECTED
+    // from Postgres (a DriverAdapterError, sometimes wrapped by Prisma). It used to
+    // reach the caller as a bare 500; it is a refusal the user can act on.
+    const guardText = [err?.message, err?.meta?.cause, err?.cause?.message].filter(Boolean).join(' ');
+    if (/PERIOD_PROTECTED/.test(guardText)) {
+        return {
+            httpStatus: HR_ERRORS.CONFLICT.httpStatus,
+            code: HR_ERRORS.CONFLICT.code,
+            message: 'Recall or cancel the payroll run that covers this day before changing its attendance',
+            details: undefined,
+            isOperational: true,
+        };
+    }
+
     // Prisma known request errors → human-readable messages (ERR-3: never leak raw Prisma detail)
     if (err?.name === 'PrismaClientKnownRequestError' || err?.code?.startsWith('P') || err?.meta?.cause) {
         const prismaCode = err?.code || '';

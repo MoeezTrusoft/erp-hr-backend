@@ -29,7 +29,7 @@ import {
   setPrimaryEnrolment,
   clearPrimaryEnrolment,
 } from "../../services/deviceEnrolment.service.js";
-import { resolveAttendanceReadScope } from "../utils/actorScope.js";
+import { assertSeesCompanyAttendance, resolveAttendanceReadScope } from "../utils/actorScope.js";
 import {
   createCallIn,
   listCallIns,
@@ -195,6 +195,7 @@ export function registerAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      assertSeesCompanyAttendance(user, permissions);
       const data = await mcpAttendanceDailySummary(user, { ...args, tenantId: user.tenantId });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })

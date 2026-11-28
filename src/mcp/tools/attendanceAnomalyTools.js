@@ -145,7 +145,7 @@ export function registerAttendanceAnomalyTools(server) {
 
   server.tool(
     "hr_attendance_anomaly_create",
-    "Raise a regularization request. Category and times are derived server-side; only reason is accepted",
+    "Retired: always refuses (410). Employees raise a regularization with hr_attendance_rules_raise",
     {
       date: z.string().describe("The affected work date (YYYY-MM-DD)"),
       type: z.enum(["LATE_CHECKIN","MISSING_CHECKIN","MISSING_CHECKOUT","EARLY_CHECKOUT","ABSENT","OTHER"]).optional(),

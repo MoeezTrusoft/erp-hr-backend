@@ -182,6 +182,17 @@ export function canViewOthersLeave(user, permissions) {
 // HR-OT-SCOPE-01 — company-wide overtime (every person's hours, the pending
 // queue, the at-risk list) needs the attendance write surface or the read-all
 // grant; the hr:attendance VIEW every employee holds is not enough.
+// HR-ATT-SCOPE-01 — company-wide attendance (every person's days, exports,
+// reconciliation, headcount totals) is an HR view: the attendance write surface
+// or the read-all grant. Every employee holds hr:attendance VIEW for their own rows.
+export function assertSeesCompanyAttendance(user, permissions) {
+  if (!resolveAttendanceReadScope(user, permissions).canViewOthers)
+    throw Object.assign(new Error("Insufficient permissions: company attendance is an HR view"), {
+      status: 403,
+      code: "HR-4030",
+    });
+}
+
 export function assertSeesTeamOvertime(user, permissions) {
   if (!resolveAttendanceReadScope(user, permissions).canViewOthers)
     throw Object.assign(new Error("Insufficient permissions: company overtime figures are an HR view"), {

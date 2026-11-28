@@ -1,4 +1,16 @@
 import prisma from "../lib/prisma.js";
+import { tenantTransaction } from "../lib/rlsTenant.js";
+import { assertAttendancePeriodOpen } from "./attendancePeriod.service.js";
+
+// HR-ATT-LOCK-02 — a manual time entry for a day inside a payroll run (pending
+// through finalized) changes that period's timesheet after payroll took it, so
+// it is refused like every other attendance write.
+const assertDaysOpen = async (tenantId, ...dates) => {
+    const days = dates.filter(Boolean).map((d) => new Date(d)).filter((d) => !Number.isNaN(+d));
+    if (!days.length || !tenantId) return;
+    const from = new Date(Math.min(...days)), to = new Date(Math.max(...days));
+    await tenantTransaction(prisma, (tx) => assertAttendancePeriodOpen(tx, tenantId, from, to), { tenantId });
+};
 import { AppError } from '../utils/AppError.js';
 import { logAction } from "../utils/logs.js";
 import { scopedWhere, scopedData } from "../lib/tenancy.js";
@@ -51,6 +63,7 @@ export const createTimeEntry = async (data) => {
     if (end_time && new Date(end_time) <= new Date(start_time)) {
         throw new AppError('End time must be after start time', 400);
     }
+    await assertDaysOpen(tenantId, start_time, end_time);
 
     const create =  await prisma.timeEntry.create({
         data: scopedData(tenantId, {
@@ -104,6 +117,7 @@ export const updateTimeEntry = async (id, data, actorEmployeeId, tenantId, isAdm
     if (!isAdmin && entry.employeeId !== Number(actorEmployeeId)) {
         throw new AppError('Not authorized to update this time entry', 403);
     }
+    await assertDaysOpen(tenantId, entry.start_time, entry.end_time, data.start_time, data.end_time);
 
     const updateData = { ...data };
 
@@ -159,6 +173,7 @@ export const deleteTimeEntry = async (id, actorEmployeeId, tenantId, isAdmin = f
     if (!isAdmin && entry.employeeId !== Number(actorEmployeeId)) {
         throw new AppError('Not authorized to delete this time entry', 403);
     }
+    await assertDaysOpen(tenantId, entry.start_time, entry.end_time);
 
     const deleted =  await prisma.timeEntry.delete({
         where: { id: parseInt(id) }

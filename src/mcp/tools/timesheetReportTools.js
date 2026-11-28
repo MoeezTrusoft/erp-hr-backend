@@ -22,7 +22,7 @@ import {
 import { buildMonthlyReconciliation } from "../../services/attendanceReconciliation.service.js";
 import { resolveActingEmployeeId } from "../../lib/actingEmployee.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
-import { resolveAttendanceReadScope } from "../utils/actorScope.js";
+import { assertSeesCompanyAttendance, resolveAttendanceReadScope } from "../utils/actorScope.js";
 import { assertPermission, hasPermission } from "../utils/assertPermission.js";
 import { withToolError } from "../utils/toolError.js";
 import prisma from '../../lib/prisma.js';
@@ -169,6 +169,7 @@ export function registerTimesheetReportTools(server) {
     withToolError(async ({ from, to }) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      assertSeesCompanyAttendance(user, permissions);
       const data = await buildMonthlyReconciliation({ tenantId: user.tenantId, from, to });
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_reconciliation")
