@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import logger from "../../lib/logger.js";
 import { toJsonRpcError } from "./mcpErrorMap.js";
+import { normalizeError } from "../../middlewares/error.middleware.js";
 
 // LOG-4: HR MCP tools accept flat top-level C4-sensitive fields (iban, ntn,
 // baseSalary, accountNumber, ...). The pino `*.<field>` redact globs only reach
@@ -50,7 +51,8 @@ export function withResourceError(fn, resourceUri = "unknown_resource") {
       }, "MCP resource read failed");
       const body = {
         error: jsonrpc.message,
-        status: err?.status || err?.httpStatus || err?.statusCode || 500,
+        // A status-less error (e.g. a DB guard) takes the normalized status, not a blanket 500.
+        status: err?.status || err?.httpStatus || err?.statusCode || normalizeError(err).httpStatus || 500,
         code: jsonrpc.data.code,
         jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
       };
@@ -90,7 +92,8 @@ export function withToolError(fn, toolName = "unknown_tool") {
       // additions machine clients should branch on. `error` is leak-safe (ERR-3).
       const body = {
         error: jsonrpc.message,
-        status: err?.status || err?.httpStatus || err?.statusCode || 500,
+        // A status-less error (e.g. a DB guard) takes the normalized status, not a blanket 500.
+        status: err?.status || err?.httpStatus || err?.statusCode || normalizeError(err).httpStatus || 500,
         code: jsonrpc.data.code,
         jsonrpc: { code: jsonrpc.code, data: jsonrpc.data },
       };

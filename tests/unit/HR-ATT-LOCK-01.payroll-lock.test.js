@@ -47,3 +47,11 @@ describe('HR-ATT-LOCK-02 time entries respect the payroll lock', () => {
     expect(prismaMock.timeEntry.delete).not.toHaveBeenCalled();
   });
 });
+
+describe('HR-ATT-LOCK-01 the MCP body status follows the mapping', () => {
+  it('a status-less PERIOD_PROTECTED tool error reports 409, not 500', async () => {
+    const { withToolError } = await import('../../src/mcp/utils/toolError.js');
+    const res = await withToolError(async () => { throw new Error('PERIOD_PROTECTED: recall or cancel payroll before changing attendance'); }, 't')({});
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ status: 409, code: 'HR-4090' });
+  });
+});
