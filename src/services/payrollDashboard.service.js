@@ -150,6 +150,7 @@ export async function getPayrollThisMonth({ tenantId, runId } = {}) {
 
   // Days until this month's pay date (>= 0).
   const { daysUntilPayDate, payDate, payDateOffsetDays } = computeDaysUntilPayDate({ run, calendar });
+  const next = computeNextPayDate({ calendar });
 
   return {
     run: {
@@ -168,11 +169,36 @@ export async function getPayrollThisMonth({ tenantId, runId } = {}) {
     // "due in 3 days" or "overdue by 2 days" instead of "0 days".
     payDate,
     payDateOffsetDays,
+    // The next pay date from today, whatever run it belongs to: once a run's pay
+    // date has passed, the dashboard countdown moves on instead of showing 0.
+    nextPayDate: next.payDate,
+    daysUntilNextPayDate: next.days,
     gross: Number(run.totalGross) || 0,
     totalDeductions: Number(run.totalDeductions) || 0,
     deductionBreakdown,
     pendingApprovals,
   };
+}
+
+const utcToday = (now = new Date()) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+
+// The first pay date the calendar gives on or after today (this month's, else next month's).
+export function computeNextPayDate({ calendar, now = new Date() } = {}) {
+  const today = utcToday(now);
+  let year = today.getUTCFullYear();
+  let month = today.getUTCMonth() + 1;
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const iso = resolvePayDate({ year, month, calendar: calendar || undefined });
+      const days = Math.round((new Date(`${iso}T00:00:00.000Z`).getTime() - today.getTime()) / 86400000);
+      if (days >= 0) return { payDate: iso, days };
+      month += 1;
+      if (month > 12) { month = 1; year += 1; }
+    }
+  } catch {
+    // An unusable calendar falls through to "not set".
+  }
+  return { payDate: null, days: null };
 }
 
 // Resolve the month's pay date from the calendar rule and diff against today.

@@ -86,6 +86,7 @@ import { normalizeError } from "../middlewares/error.middleware.js";
 import { toJsonRpcError } from "./utils/mcpErrorMap.js";
 import defaultLogger from "../lib/logger.js";
 import { mcpCtx } from "./context.js";
+import { withResourceGates } from "./utils/resourceGate.js";
 
 // API-6 + ERR-3/ERR-2 (ARCH-05 §6–§7, ARCH-01 §4/§13) — central error seam.
 //
@@ -264,6 +265,7 @@ function withAnnotationInjection(server) {
 export function registerAllTools(server) {
   withAnnotationInjection(server);
   withSafeToolCallbacks(server);
+  withResourceGates(server, () => mcpCtx.getStore());
   registerEmployeeTools(server);
   registerAttendanceTools(server);
   registerLeaveTools(server);

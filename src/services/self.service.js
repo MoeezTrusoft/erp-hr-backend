@@ -1,5 +1,7 @@
 import prisma from "../config/prisma.js";
 import { scopedWhere, scopedEmployeeWhere } from "../lib/tenancy.js";
+// Same as EMPLOYEE_VISIBLE_STATUSES in myPayslip.service.js (not imported: it pulls the whole payslip graph).
+const EMPLOYEE_VISIBLE_STATUSES = ["FINALIZED", "DISTRIBUTED"];
 
 // C.2-completion — verified tenant (T-P2.1) read off req.user.tenantId and folded
 // into every self-service read/write as defense-in-depth. The employeeId already
@@ -53,7 +55,11 @@ export const upsertSelfEmergencyContact = async (req) => {
 
 export const listSelfPayslips = async (req) => {
   const employeeId = requireEmployeeId(req);
-  return prisma.payrollPayslip.findMany({ where: scopedWhere(tenantOf(req), { employeeId }), orderBy: { created_at: "desc" } });
+  // Draft and held slips stay private until payroll is finalized, as in hr_my_payslips_list.
+  return prisma.payrollPayslip.findMany({
+    where: scopedWhere(tenantOf(req), { employeeId, status: { in: EMPLOYEE_VISIBLE_STATUSES } }),
+    orderBy: { created_at: "desc" },
+  });
 };
 
 export const listSelfLeaveBalances = async (req) => {
