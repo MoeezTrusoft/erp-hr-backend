@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { mcpCtx as mcpRequestContext } from "../context.js";
 import { assertPermission } from "../utils/assertPermission.js";
+import { assertSeesCompanyAttendance } from "../utils/actorScope.js";
 import { withToolError } from "../utils/toolError.js";
 import {
   getAttendanceDashboard,
@@ -31,6 +32,7 @@ export function registerTimeAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      assertSeesCompanyAttendance(user, permissions);
       const data = await getAttendanceDashboard(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_dashboard_get")
@@ -53,6 +55,7 @@ export function registerTimeAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      assertSeesCompanyAttendance(user, permissions);
       const data = await listAttendanceRecords(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_records_dashboard")
@@ -74,6 +77,7 @@ export function registerTimeAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      assertSeesCompanyAttendance(user, permissions);
       const data = await exportAttendanceRecords(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_dashboard_export")
@@ -90,6 +94,7 @@ export function registerTimeAttendanceTools(server) {
     withToolError(async (args) => {
       const { user, permissions } = getCtx();
       assertPermission(permissions, "GET", "hr:attendance", user.isAdmin);
+      assertSeesCompanyAttendance(user, permissions);
       const data = await listPendingApprovals(args, user.tenantId);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     }, "hr_attendance_pending_approvals")

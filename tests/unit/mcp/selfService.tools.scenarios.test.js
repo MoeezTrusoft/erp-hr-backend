@@ -37,7 +37,6 @@ const parse = (res) => JSON.parse(res.content[0].text);
 const TOOLS = [
   { name: 'hr_self_update_profile', args: {} },
   { name: 'hr_self_leave_request', args: { leavePolicyId: '1', startDate: '2026-01-15', endDate: '2026-01-17' } },
-  { name: 'hr_self_checkin', args: {} },
 ];
 
 describe('SELF-SERVICE-SCENARIOS — registration', () => {

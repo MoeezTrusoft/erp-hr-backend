@@ -73,7 +73,7 @@ const TOOLS = [
   { name: 'hr_attendance_checkout', ctrl: () => captureChange.requestManualPunch, gate: 'hr:attendance', action: 'CREATE', args: { employeeId: '7', reason: 'Forgot to punch' } },
   { name: 'hr_attendance_device_connectivity', ctrl: () => attendanceCtl.mcpDeviceConnectivity, gate: 'hr:attendance', action: 'CREATE', args: {}, skipTenantCheck: true },
   { name: 'hr_attendance_device_sync', ctrl: () => attendanceCtl.mcpDeviceSyncAttendance, gate: 'hr:attendance', action: 'CREATE', args: {} },
-  { name: 'hr_attendance_daily_summary', ctrl: () => attendanceCtl.mcpAttendanceDailySummary, gate: 'hr:attendance', action: 'VIEW', args: { employeeId: 7 } },
+  { name: 'hr_attendance_daily_summary', ctrl: () => attendanceCtl.mcpAttendanceDailySummary, gate: 'hr:attendance', action: 'VIEW', actions: ['VIEW', 'EDIT'], args: { employeeId: 7 } }, // HR-ATT-SCOPE-01: company totals are an HR view
   // TS-SUBMIT-01 — the employee self-service draft-create registration moved
   // OFF attendanceTools (duplicate name; hr_timesheet_create lives in
   // timesheetTools.js), so its scenario row goes too.
@@ -97,8 +97,8 @@ describe('ATTENDANCE-SCENARIOS — registration', () => {
   });
 });
 
-describe.each(TOOLS)('$name scenarios', ({ name, ctrl: ctrlOf, gate, action, args, skipTenantCheck }) => {
-  const grant = { [gate]: [action] };
+describe.each(TOOLS)('$name scenarios', ({ name, ctrl: ctrlOf, gate, action, actions, args, skipTenantCheck }) => {
+  const grant = { [gate]: actions ?? [action] };
 
   beforeEach(() => jest.clearAllMocks());
 

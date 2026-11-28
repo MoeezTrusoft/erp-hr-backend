@@ -5,7 +5,6 @@ import {
   mcpGetSelfLeaveBalances,
   mcpGetSelfPayslips,
   mcpGetSelfProfile,
-  mcpSelfCheckin,
   mcpUpdateSelfProfile,
 } from "../controllers/selfMcpController.js";
 import { mcpCtx as mcpRequestContext } from "../context.js";
@@ -100,20 +99,6 @@ export function registerSelfTools(server) {
     withToolError(async (args) => {
       const { user } = getCtx();
       const data = await mcpCreateSelfLeaveRequest(user, args);
-      return { content: [{ type: "text", text: JSON.stringify(data) }] };
-    })
-  );
-
-  server.tool(
-    "hr_self_checkin",
-    "Employee self-service check-in",
-    // No caller-supplied fields: employeeId is auto-injected from ctx and the
-    // Attendance model has no location/notes columns, so nothing else is
-    // persisted. (Previously-declared location/notes were silently discarded.)
-    z.object({}),
-    withToolError(async (args) => {
-      const { user } = getCtx();
-      const data = await mcpSelfCheckin(user, args);
       return { content: [{ type: "text", text: JSON.stringify(data) }] };
     })
   );
